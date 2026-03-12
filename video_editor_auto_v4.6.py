@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-视频自动剪辑系统 v4.7 - Video Auto Editor
+Video Auto Editor v4.7
 Copyright (C) 2026
 
 This program is free software: you can redistribute it and/or modify
@@ -11,38 +11,39 @@ the Free Software Foundation, either version 3 of the License, or
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY. See the LICENSE file for details.
 
-场景A: 单视频粗剪（静音检测 → 段落识别 → 评分 → 转录 → 流畅度分析 → 去重 → 剪辑）
-场景B: 批量粗剪 → 跨视频去重 → 拼接
+Scenario A: Single video (silence detection -> segment identification -> scoring
+            -> transcription -> fluency analysis -> dedup -> clip)
+Scenario B: Batch processing -> cross-video dedup -> concatenation
 
-依赖: FFmpeg, openai-whisper
+Dependencies: FFmpeg, openai-whisper
 """
 import subprocess, re, os, sys, json, glob, difflib, datetime, shutil
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional
 
-# --- 配置 ---
+# --- Config ---
 CONFIG = {
-    "silence_noise": -30,           # dB, 越小越严格
-    "silence_duration": 0.8,        # 秒, 静音最小时长
-    "min_score": 90,                # 基础分最低要求 (满分100)
-    "min_duration": 15,             # 段落最低时长 (秒)
-    "buffer_start": 1,              # 开始前缓冲 (秒)
-    "buffer_end": 3,                # 结束后缓冲 (秒)
-    "crf": 18,                      # 视频质量 (18=视觉无损)
-    "preset": "fast",               # 编码速度
-    "audio_bitrate": "192k",        # 音频码率
-    "penalty_repeat": 5,            # 每次重复扣分
-    "penalty_stutter": 3,           # 每次卡顿扣分
-    "penalty_interrupt": 10,        # 突然中断扣分
-    "bonus_natural_end": 5,         # 自然结束加分
-    "bonus_completeness_max": 3,    # 完整度加分上限
-    "duplicate_threshold": 0.7,     # 内容相似度阈值
+    "silence_noise": -30,           # dB, lower = stricter
+    "silence_duration": 0.8,        # seconds, min silence length
+    "min_score": 90,                # min base score (max 100)
+    "min_duration": 15,             # min segment duration (seconds)
+    "buffer_start": 1,              # buffer before start (seconds)
+    "buffer_end": 3,                # buffer after end (seconds)
+    "crf": 18,                      # video quality (18=visually lossless)
+    "preset": "fast",               # encoding speed
+    "audio_bitrate": "192k",        # audio bitrate
+    "penalty_repeat": 5,            # penalty per repeat
+    "penalty_stutter": 3,            # penalty per stutter
+    "penalty_interrupt": 10,        # sudden interruption penalty
+    "bonus_natural_end": 5,         # natural ending bonus
+    "bonus_completeness_max": 3,    # completeness bonus cap
+    "duplicate_threshold": 0.7,     # content similarity threshold
 }
 
-# --- 数据结构 ---
+# --- Data structures ---
 @dataclass
 class Segment:
-    """视频段落"""
+    """Video segment (non-silent interval)"""
     index: int
     start_time: float
     end_time: float
@@ -66,7 +67,7 @@ class Segment:
 
 @dataclass
 class ClipInfo:
-    """单个视频的粗剪结果，用于跨视频去重"""
+    """Single video rough-cut result, for cross-video dedup"""
     video_name: str
     clip_path: str
     transcript: str
@@ -76,9 +77,9 @@ class ClipInfo:
     is_cross_duplicate: bool = False
     duplicate_of: str = ""
 
-# --- 模块1: 静音检测 ---
+# --- Module 1: Silence detection ---
 def detect_silence(video_path):
-    """使用 FFmpeg silencedetect 滤镜检测静音段"""
+    """Detect silence spans using FFmpeg silencedetect filter"""
     cmd = [
         "ffmpeg", "-i", video_path,
         "-af", f"silencedetect=noise={CONFIG['silence_noise']}dB:d={CONFIG['silence_duration']}",
@@ -89,9 +90,9 @@ def detect_silence(video_path):
     ends = re.findall(r'silence_end: ([\d.]+)', result.stderr)
     return [(float(starts[i]), float(ends[i])) for i in range(min(len(starts), len(ends)))]
 
-# --- 模块2: 段落识别 ---
+# --- Module 2: Segment identification ---
 def identify_segments(silences, total_duration):
-    """根据静音段将视频切分为段落（≥1秒的非静音区间）"""
+    """Split video into segments by silence (>=1s non-silent intervals)"""
     if not silences:
         return [Segment(index=0, start_time=0, end_time=total_duration, duration=total_duration)]
 
@@ -117,9 +118,9 @@ def identify_segments(silences, total_duration):
 
     return segments
 
-# --- 模块3: 评分系统 (4维 × 25分 = 100分) ---
+# --- Module 3: Scoring (4 dims x 25 pts = 100) ---
 def _score_boundary(silences, time_point, total_duration, is_start):
-    """评估段落边界的清晰度 (开始或结束), 返回 0-25 分"""
+    """Score segment boundary clarity (start or end), return 0-25"""
     if is_start:
         nearby = [s for s in silences if abs(s[1] - time_point) < 0.1]
     else:
@@ -138,11 +139,11 @@ def _score_boundary(silences, time_point, total_duration, is_start):
     return 5
 
 def score_segment(seg, silences, total_duration):
-    """4维度评分: 清晰开始/结束 + 中间流畅 + 节奏自然"""
+    """4-dimension scoring: clear start/end + mid fluency + natural rhythm"""
     seg.score_start = _score_boundary(silences, seg.start_time, total_duration, is_start=True)
     seg.score_end = _score_boundary(silences, seg.end_time, total_duration, is_start=False)
 
-    # 中间流畅 (25分)
+    # Mid fluency (25 pts)
     internal = [s for s in silences
                 if s[0] > seg.start_time + 0.1 and s[1] < seg.end_time - 0.1]
     seg.internal_silences = internal
@@ -154,7 +155,7 @@ def score_segment(seg, silences, total_duration):
     elif seg.interruption_count <= 4:    seg.score_fluency = 15
     else: seg.score_fluency = max(5, 25 - seg.interruption_count * 3)
 
-    # 节奏自然 (25分): 停顿占比 (15分) + 最大单次停顿 (10分) + 极短片段惩罚
+    # Natural rhythm (25 pts): pause ratio (15) + max single pause (10) + short-segment cap
     score_rhythm = 0
     if seg.duration > 0:
         ratio = seg.interruption_duration / seg.duration
@@ -170,9 +171,9 @@ def score_segment(seg, silences, total_duration):
     seg.total_score = seg.score_start + seg.score_end + seg.score_fluency + seg.score_rhythm
     return seg
 
-# --- 模块4: 转录 (Whisper CLI) ---
+# --- Module 4: Transcription (Whisper CLI) ---
 def transcribe_segment(video_path, seg, work_dir):
-    """提取段落音频并调用 Whisper 转录为文本"""
+    """Extract segment audio and transcribe via Whisper"""
     audio_path = os.path.join(work_dir, f"segment_{seg.index}.wav")
     subprocess.run([
         "ffmpeg", "-y", "-i", video_path,
@@ -181,7 +182,7 @@ def transcribe_segment(video_path, seg, work_dir):
     ], capture_output=True, text=True)
 
     if not os.path.exists(audio_path):
-        print(f"    ⚠️ 音频提取失败: segment_{seg.index}")
+        print(f"    ⚠️  Audio extraction failed: segment_{seg.index}")
         return ""
     try:
         subprocess.run([
@@ -193,21 +194,21 @@ def transcribe_segment(video_path, seg, work_dir):
         if os.path.exists(txt_path):
             with open(txt_path, 'r', encoding='utf-8') as f:
                 return f.read().strip()
-        print(f"    ⚠️ 转录文件未生成: segment_{seg.index}")
+        print(f"    ⚠️  Transcript file not generated: segment_{seg.index}")
         return ""
     except Exception as e:
-        print(f"    ⚠️ 转录失败: segment_{seg.index}: {e}")
+        print(f"    ⚠️  Transcription failed: segment_{seg.index}: {e}")
         return ""
 
-# --- 模块5: 流畅度分析 ---
+# --- Module 5: Fluency analysis ---
 def analyze_fluency(transcript):
-    """分析转录文本，返回 (repeat_count, stutter_count, is_natural_end, is_interrupted)"""
+    """Analyze transcript, return (repeat_count, stutter_count, is_natural_end, is_interrupted)"""
     if not transcript:
         return 0, 0, False, False
 
     text = re.sub(r'(?i)\bwhisper\b', '', transcript.strip()).strip()
 
-    # 滑动窗口短语重复检测 (2-4字短语在10字窗口内重复)
+    # Sliding-window phrase repeat detection (2-4 char phrases in 10-char window)
     text_clean = re.sub(r'[^\w]', '', text)
     repeat_count, i, window = 0, 0, 10
     while i < len(text_clean) - 2:
@@ -225,16 +226,17 @@ def analyze_fluency(transcript):
         if not found:
             i += 1
 
-    # 卡顿检测
+    # Stutter detection (patterns for Chinese: 嗯啊呃=um/uh, 那个=that, 就是说=I mean, ellipsis)
     stutter_count = sum(len(re.findall(p, text)) for p in [r'[嗯啊呃]', r'那个', r'就是说', r'\.{2,}', r'…'])
 
-    # 突然中断检测 (20种连接词/未完成标记)
+    # Sudden interruption (Chinese connective/incomplete markers)
     interrupt_re = r'(的时候|然后|但是|如果|因为|而且|所以|就是|其实|那么|或者|并且|还是|不过|包括|比如说|另外|接下来|还有就是|就是说)$'
     is_interrupted = bool(re.search(interrupt_re, text))
 
-    # 自然结束检测
+    # Natural end detection
     has_punctuation = bool(re.search(r'[。！？]$', text))
     is_connective_end = bool(re.search(interrupt_re, text))
+    # Natural end patterns (Chinese: questions, summaries, farewells)
     special_natural_patterns = [
         r'怎么[^。！？]*[呢？]$', r'什么[^。！？]*[呢？]$', r'为什么[^。！？]*[呢？]$',
         r'就是这样[。！？]*$', r'其实有很多[的。]*$',
@@ -247,9 +249,9 @@ def analyze_fluency(transcript):
 
     return repeat_count, stutter_count, is_natural_end, is_interrupted
 
-# --- 模块6: 调整分计算 ---
+# --- Module 6: Adjusted score ---
 def calculate_adjusted_score(seg):
-    """在基础分上叠加流畅度惩罚/奖励，归一化到 0-100"""
+    """Apply fluency penalties/bonuses to base score, normalize to 0-100"""
     adjusted = seg.total_score
     duration_factor = max(1.0, seg.duration / 30.0)
     adjusted -= (seg.repeat_count / duration_factor) * CONFIG['penalty_repeat']
@@ -262,9 +264,9 @@ def calculate_adjusted_score(seg):
         adjusted += max(0, CONFIG['bonus_completeness_max'] * (1 - abs(seg.duration - 60) / 60))
     return max(0, min(100, adjusted))
 
-# --- 模块7: 内容去重 (通用分组策略) ---
+# --- Module 7: Content dedup (generic grouping) ---
 def _find_duplicate_groups(items, get_text):
-    """通用去重分组: 两两比较文本相似度，相似的归为一组"""
+    """Group items by text similarity (pairwise comparison)"""
     groups = []
     for i in range(len(items)):
         for j in range(i + 1, len(items)):
@@ -283,11 +285,11 @@ def _find_duplicate_groups(items, get_text):
     return groups
 
 def check_duplicate_content(candidates):
-    """视频内去重: 候选段落分组，组内保留最优，其余标记为重复"""
+    """Within-video dedup: group candidates, keep best per group, mark rest as duplicate"""
     groups = _find_duplicate_groups(candidates, lambda s: s.transcript)
     for group in groups:
         for i, j in [(i, j) for i in group for j in group if i < j]:
-            print(f"    ⚠️  segment_{candidates[i].index} 和 segment_{candidates[j].index} 内容相似")
+            print(f"    ⚠️  segment_{candidates[i].index} and segment_{candidates[j].index} content similar")
         best = max(group, key=lambda idx: (candidates[idx].is_natural_end, candidates[idx].adjusted_score, candidates[idx].index))
         for idx in group:
             if idx != best:
@@ -296,13 +298,13 @@ def check_duplicate_content(candidates):
     return candidates
 
 def cross_video_dedup(clips):
-    """跨视频去重: 对比各粗剪片段的转录内容，标记重复片段"""
+    """Cross-video dedup: compare clip transcripts, mark duplicates"""
     if len(clips) < 2:
         return clips
     groups = _find_duplicate_groups(clips, lambda c: c.transcript)
     for group in groups:
         for i, j in [(i, j) for i in group for j in group if i < j]:
-            print(f"    ⚠️  {clips[i].video_name} 和 {clips[j].video_name} 内容相似")
+            print(f"    ⚠️  {clips[i].video_name} and {clips[j].video_name} content similar")
         best = max(group, key=lambda idx: (clips[idx].is_natural_end, clips[idx].adjusted_score, clips[idx].video_name))
         for idx in group:
             if idx != best:
@@ -310,9 +312,9 @@ def cross_video_dedup(clips):
                 clips[idx].duplicate_of = clips[best].video_name
     return clips
 
-# --- 模块8: 分层筛选 ---
+# --- Module 8: Layered selection ---
 def select_best_segment(candidates):
-    """分层筛选: 自然结束 → 流畅度 → 调整分 → 时长/索引"""
+    """Layered selection: natural end -> fluency -> adjusted score -> duration/index"""
     if not candidates:
         return None
 
@@ -338,9 +340,9 @@ def select_best_segment(candidates):
 
     return pool[0]
 
-# --- 模块9: FFmpeg 操作 ---
+# --- Module 9: FFmpeg operations ---
 def clip_segment(video_path, seg, output_path):
-    """使用 FFmpeg 剪辑目标段落 (带前后缓冲)"""
+    """Clip target segment with FFmpeg (with start/end buffer)"""
     start = max(0, seg.start_time - CONFIG['buffer_start'])
     end = seg.end_time + CONFIG['buffer_end']
     cmd = [
@@ -353,7 +355,7 @@ def clip_segment(video_path, seg, output_path):
     return subprocess.run(cmd, capture_output=True, text=True).returncode == 0
 
 def concat_videos(clip_paths, output_path):
-    """使用 FFmpeg concat 协议拼接视频列表"""
+    """Concatenate video list using FFmpeg concat protocol"""
     list_file = output_path + ".list.txt"
     with open(list_file, 'w') as f:
         for p in clip_paths:
@@ -369,60 +371,60 @@ def concat_videos(clip_paths, output_path):
         os.remove(list_file)
     return ok
 
-# --- 场景A: 单视频处理 ---
+# --- Scenario A: Single video ---
 def process_single_video(video_path, output_dir, work_dir, batch_mode=False):
     """
-    处理单个视频，返回 ClipInfo；若失败返回 None。
-    batch_mode=True 时不生成单独报告（由场景B统一报告）。
+    Process single video, return ClipInfo; None on failure.
+    batch_mode=True skips individual report (Scenario B generates one).
     """
     video_name = os.path.splitext(os.path.basename(video_path))[0]
     video_work = os.path.join(work_dir, video_name)
     os.makedirs(video_work, exist_ok=True)
 
     print(f"\n{'='*60}")
-    print(f"  处理: {video_name}" if batch_mode else f"  视频自动剪辑系统 v4.7 - 场景A\n  输入: {video_path}")
+    print(f"  Processing: {video_name}" if batch_mode else f"  Video Auto Editor v4.7 - Scenario A\n  Input: {video_path}")
     print(f"{'='*60}\n")
 
-    # 步骤1: 获取视频信息
-    print("📋 步骤1: 获取视频信息...")
+    # Step 1: Get video info
+    print("📋 Step 1: Getting video info...")
     cmd = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", video_path]
     result = subprocess.run(cmd, capture_output=True, text=True)
     try:
         total_duration = float(json.loads(result.stdout)['format']['duration'])
     except Exception as e:
-        print(f"   ❌ 无法获取视频信息: {e}")
+        print(f"   ❌ Failed to get video info: {e}")
         return None
-    print(f"   时长: {total_duration:.1f}s ({total_duration/60:.1f}min)")
+    print(f"   Duration: {total_duration:.1f}s ({total_duration/60:.1f}min)")
 
-    # 步骤2: 静音检测
-    print("\n🔇 步骤2: 静音检测...")
+    # Step 2: Silence detection
+    print("\n🔇 Step 2: Silence detection...")
     silences = detect_silence(video_path)
-    print(f"   检测到 {len(silences)} 个静音段")
+    print(f"   Detected {len(silences)} silence spans")
 
-    # 步骤3: 段落识别
-    print("\n📝 步骤3: 段落识别...")
+    # Step 3: Segment identification
+    print("\n📝 Step 3: Segment identification...")
     segments = identify_segments(silences, total_duration)
-    print(f"   识别到 {len(segments)} 个段落")
+    print(f"   Identified {len(segments)} segments")
 
-    # 步骤4: 评分
-    print("\n⭐ 步骤4: 评分...")
+    # Step 4: Scoring
+    print("\n⭐ Step 4: Scoring...")
     for seg in segments:
         score_segment(seg, silences, total_duration)
         print(f"   segment_{seg.index}: {seg.start_time:.1f}s-{seg.end_time:.1f}s "
-              f"({seg.duration:.1f}s) 分数={seg.total_score}")
+              f"({seg.duration:.1f}s) score={seg.total_score}")
 
-    # 步骤5: 筛选候选
-    print(f"\n🔍 步骤5: 筛选候选 (min_score={CONFIG['min_score']}, min_duration={CONFIG['min_duration']}s)...")
+    # Step 5: Filter candidates
+    print(f"\n🔍 Step 5: Filtering candidates (min_score={CONFIG['min_score']}, min_duration={CONFIG['min_duration']}s)...")
     candidates = [s for s in segments if s.total_score >= CONFIG['min_score'] and s.duration >= CONFIG['min_duration']]
-    print(f"   {len(candidates)} 个候选段落")
+    print(f"   {len(candidates)} candidate segments")
 
     if not candidates:
-        print("\n⚠️  没有满足条件的候选段落，降低标准...")
+        print("\n⚠️  No candidates meet criteria, lowering standards...")
         candidates = sorted(segments, key=lambda s: s.total_score, reverse=True)[:5]
-        print(f"   选择了评分最高的 {len(candidates)} 个段落")
+        print(f"   Selected top {len(candidates)} segments by score")
 
-    # 步骤6: 转录
-    print("\n🎤 步骤6: 转录候选段落...")
+    # Step 6: Transcription
+    print("\n🎤 Step 6: Transcribing candidates...")
     whisper_available = True
     try:
         if subprocess.run(["python3", "-m", "whisper", "--help"], capture_output=True, text=True, timeout=10).returncode != 0:
@@ -432,75 +434,75 @@ def process_single_video(video_path, output_dir, work_dir, batch_mode=False):
 
     if whisper_available:
         for seg in candidates:
-            print(f"   转录 segment_{seg.index}...")
+            print(f"   Transcribing segment_{seg.index}...")
             seg.transcript = transcribe_segment(video_path, seg, video_work)
             if seg.transcript:
                 preview = seg.transcript[:50] + "..." if len(seg.transcript) > 50 else seg.transcript
                 print(f"   ✅ [{preview}]")
     else:
-        print("   ⚠️  Whisper未安装，跳过转录，使用纯音频评分")
+        print("   ⚠️  Whisper not installed, skipping transcription, using audio-only scoring")
 
-    # 步骤7: 流畅度分析
-    print("\n📊 步骤7: 流畅度分析...")
+    # Step 7: Fluency analysis
+    print("\n📊 Step 7: Fluency analysis...")
     for seg in candidates:
         if seg.transcript:
             seg.repeat_count, seg.stutter_count, seg.is_natural_end, seg.is_interrupted = analyze_fluency(seg.transcript)
         seg.adjusted_score = calculate_adjusted_score(seg)
-        status = (" ✅自然结束" if seg.is_natural_end else "") + (" ❌中断" if seg.is_interrupted else "")
-        print(f"   segment_{seg.index}: 基础={seg.total_score} 调整={seg.adjusted_score:.1f}"
-              f" 重复={seg.repeat_count} 卡顿={seg.stutter_count}{status}")
+        status = (" ✅natural end" if seg.is_natural_end else "") + (" ❌interrupted" if seg.is_interrupted else "")
+        print(f"   segment_{seg.index}: base={seg.total_score} adjusted={seg.adjusted_score:.1f}"
+              f" repeat={seg.repeat_count} stutter={seg.stutter_count}{status}")
 
-    # 步骤8: 视频内重复检测
-    print("\n🔄 步骤8: 重复内容检测...")
+    # Step 8: Within-video duplicate detection
+    print("\n🔄 Step 8: Duplicate content detection...")
     candidates = check_duplicate_content(candidates)
-    print(f"   标记了 {sum(1 for c in candidates if c.is_duplicate)} 个重复段落")
+    print(f"   Marked {sum(1 for c in candidates if c.is_duplicate)} duplicate segments")
 
-    # 步骤9: 分层筛选
-    print("\n🏆 步骤9: 分层筛选最佳段落...")
+    # Step 9: Layered selection
+    print("\n🏆 Step 9: Selecting best segment...")
     best = select_best_segment(candidates)
     if not best:
-        print("   ❌ 无法选择最佳段落")
+        print("   ❌ Cannot select best segment")
         return None
 
-    print(f"   ✅ 最佳: segment_{best.index} | "
+    print(f"   ✅ Best: segment_{best.index} | "
           f"{best.start_time:.1f}-{best.end_time:.1f}s ({best.duration:.1f}s) | "
-          f"调整分={best.adjusted_score:.1f} | 自然结束={'是' if best.is_natural_end else '否'}")
+          f"adjusted={best.adjusted_score:.1f} | natural_end={'yes' if best.is_natural_end else 'no'}")
 
-    # 步骤10: 剪辑输出
-    print(f"\n✂️  步骤10: 剪辑输出...")
-    output_path = os.path.join(output_dir, f"{video_name}_粗剪.mp4")
+    # Step 10: Clip output
+    print(f"\n✂️  Step 10: Clipping output...")
+    output_path = os.path.join(output_dir, f"{video_name}_clip.mp4")
     if not clip_segment(video_path, best, output_path):
-        print(f"   ❌ 剪辑失败")
+        print(f"   ❌ Failed to clip")
         return None
-    print(f"   ✅ 输出: {output_path}")
+    print(f"   ✅ Output: {output_path}")
 
-    # 场景A独立运行时才生成单独报告
+    # Generate individual report only when not in batch mode
     if not batch_mode:
-        report_path = os.path.join(output_dir, f"{video_name}_报告.md")
+        report_path = os.path.join(output_dir, f"{video_name}_report.md")
         with open(report_path, 'w', encoding='utf-8') as f:
-            f.write(f"# {video_name} 粗剪报告\n\n")
-            f.write(f"**系统版本**: v4.7\n")
-            f.write(f"**处理时间**: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n")
-            f.write(f"## 视频信息\n\n")
-            f.write(f"- 时长: {total_duration:.1f}s ({total_duration/60:.1f}min)\n")
-            f.write(f"- 静音段: {len(silences)}个\n- 识别段落: {len(segments)}个\n- 候选段落: {len(candidates)}个\n\n")
-            f.write(f"## 候选段落对比\n\n")
-            f.write(f"| 段落 | 时间范围 | 时长 | 基础分 | 调整分 | 自然结束 | 重复 | 选中 |\n")
-            f.write(f"|------|---------|------|--------|--------|---------|------|------|\n")
+            f.write(f"# {video_name} Clip Report\n\n")
+            f.write(f"**Version**: v4.7\n")
+            f.write(f"**Processed**: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n")
+            f.write(f"## Video Info\n\n")
+            f.write(f"- Duration: {total_duration:.1f}s ({total_duration/60:.1f}min)\n")
+            f.write(f"- Silence spans: {len(silences)}\n- Segments: {len(segments)}\n- Candidates: {len(candidates)}\n\n")
+            f.write(f"## Candidate Comparison\n\n")
+            f.write(f"| Segment | Time Range | Duration | Base | Adjusted | Natural End | Duplicate | Selected |\n")
+            f.write(f"|---------|------------|----------|------|----------|-------------|-----------|----------|\n")
             for c in candidates:
                 f.write(f"| seg_{c.index} | {c.start_time:.1f}-{c.end_time:.1f}s | "
                         f"{c.duration:.1f}s | {c.total_score} | {c.adjusted_score:.1f} | "
-                        f"{'是' if c.is_natural_end else '否'} | "
-                        f"{'重复' if c.is_duplicate else ''} | "
+                        f"{'yes' if c.is_natural_end else 'no'} | "
+                        f"{'yes' if c.is_duplicate else ''} | "
                         f"{'✅' if c.index == best.index else ''} |\n")
-            f.write(f"\n## 最终选择\n\n")
-            f.write(f"- **段落**: segment_{best.index}\n")
-            f.write(f"- **时间**: {best.start_time:.1f}s - {best.end_time:.1f}s\n")
-            f.write(f"- **时长**: {best.duration:.1f}s\n")
-            f.write(f"- **调整分**: {best.adjusted_score:.1f}\n")
+            f.write(f"\n## Final Selection\n\n")
+            f.write(f"- **Segment**: segment_{best.index}\n")
+            f.write(f"- **Time**: {best.start_time:.1f}s - {best.end_time:.1f}s\n")
+            f.write(f"- **Duration**: {best.duration:.1f}s\n")
+            f.write(f"- **Adjusted Score**: {best.adjusted_score:.1f}\n")
             if best.transcript:
-                f.write(f"- **转录内容**: {best.transcript}\n")
-        print(f"   📄 报告: {report_path}")
+                f.write(f"- **Transcript**: {best.transcript}\n")
+        print(f"   📄 Report: {report_path}")
 
     return ClipInfo(
         video_name=video_name, clip_path=output_path,
@@ -508,23 +510,23 @@ def process_single_video(video_path, output_dir, work_dir, batch_mode=False):
         is_natural_end=best.is_natural_end, duration=best.duration,
     )
 
-# --- 场景B: 批量处理 → 跨视频去重 → 拼接 ---
+# --- Scenario B: Batch -> cross-video dedup -> concatenation ---
 def process_batch(input_dir, output_dir, work_dir):
-    """场景B: 只输出最终拼接视频 + 一份批量报告"""
+    """Scenario B: Output final concatenated video + single batch report"""
     video_files = sorted(
         glob.glob(os.path.join(input_dir, "*.MTS")) +
         glob.glob(os.path.join(input_dir, "*.mp4")) +
         glob.glob(os.path.join(input_dir, "*.mov"))
     )
     if not video_files:
-        print("❌ 未找到视频文件"); return
+        print("❌ No video files found"); return
 
     print(f"\n{'='*60}")
-    print(f"  视频自动剪辑系统 v4.7 - 场景B (批量)")
-    print(f"  输入目录: {input_dir} ({len(video_files)} 个视频)")
+    print(f"  Video Auto Editor v4.7 - Scenario B (Batch)")
+    print(f"  Input directory: {input_dir} ({len(video_files)} videos)")
     print(f"{'='*60}\n")
 
-    # 阶段1: 逐个粗剪 (batch_mode=True, 不生成单独报告)
+    # Phase 1: Process each video (batch_mode=True, no individual reports)
     clips = []
     for vf in video_files:
         clip = process_single_video(vf, output_dir, work_dir, batch_mode=True)
@@ -532,11 +534,11 @@ def process_batch(input_dir, output_dir, work_dir):
             clips.append(clip)
 
     if not clips:
-        print("❌ 没有成功处理的视频"); return
+        print("❌ No videos processed successfully"); return
 
-    # 阶段2: 跨视频去重
+    # Phase 2: Cross-video dedup
     print(f"\n{'='*60}")
-    print(f"  🔄 跨视频去重检查 ({len(clips)} 个粗剪片段)")
+    print(f"  🔄 Cross-video dedup check ({len(clips)} clips)")
     print(f"{'='*60}\n")
 
     clips = cross_video_dedup(clips)
@@ -544,63 +546,63 @@ def process_batch(input_dir, output_dir, work_dir):
     removed = [c for c in clips if c.is_cross_duplicate]
 
     for c in removed:
-        print(f"   ❌ 移除 {c.video_name} (与 {c.duplicate_of} 重复, 调整分 {c.adjusted_score:.1f})")
+        print(f"   ❌ Remove {c.video_name} (duplicate of {c.duplicate_of}, adjusted {c.adjusted_score:.1f})")
     for c in kept:
-        print(f"   ✅ 保留 {c.video_name} (调整分 {c.adjusted_score:.1f})")
-    print(f"\n   去重结果: {len(clips)} → {len(kept)} 个片段")
+        print(f"   ✅ Keep {c.video_name} (adjusted {c.adjusted_score:.1f})")
+    print(f"\n   Dedup result: {len(clips)} -> {len(kept)} clips")
 
-    # 阶段3: 拼接
+    # Phase 3: Concatenation
     print(f"\n{'='*60}")
-    print(f"  🎬 拼接 {len(kept)} 个粗剪片段")
+    print(f"  🎬 Concatenating {len(kept)} clips")
     print(f"{'='*60}\n")
 
-    final_path = os.path.join(output_dir, f"最终拼接_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.mp4")
+    final_path = os.path.join(output_dir, f"final_concat_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.mp4")
     if not concat_videos([c.clip_path for c in kept], final_path):
-        print("   ❌ 拼接失败"); return
-    print(f"   ✅ 最终视频: {final_path}")
+        print("   ❌ Concatenation failed"); return
+    print(f"   ✅ Final video: {final_path}")
 
-    # 阶段4: 清理中间文件 (单个粗剪视频 + 临时音频)
+    # Phase 4: Clean intermediate files (individual clips + temp audio)
     for c in clips:
         if os.path.exists(c.clip_path):
             os.remove(c.clip_path)
     if os.path.exists(work_dir):
         shutil.rmtree(work_dir, ignore_errors=True)
 
-    # 阶段5: 生成唯一一份报告
-    report_path = os.path.join(output_dir, "批量处理报告.md")
+    # Phase 5: Generate single batch report
+    report_path = os.path.join(output_dir, "batch_report.md")
     total_dur = sum(c.duration for c in kept)
     with open(report_path, 'w', encoding='utf-8') as f:
-        f.write(f"# 视频批量剪辑报告\n\n")
-        f.write(f"**系统版本**: v4.7\n")
-        f.write(f"**处理时间**: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n")
+        f.write(f"# Batch Processing Report\n\n")
+        f.write(f"**Version**: v4.7\n")
+        f.write(f"**Processed**: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n")
 
         if removed:
-            f.write(f"## 跨视频去重\n\n")
-            f.write(f"| 视频 | 调整分 | 自然结束 | 决策 | 原因 |\n")
-            f.write(f"|------|-------|---------|------|------|\n")
+            f.write(f"## Cross-Video Dedup\n\n")
+            f.write(f"| Video | Adjusted | Natural End | Decision | Reason |\n")
+            f.write(f"|-------|----------|--------------|----------|--------|\n")
             for c in clips:
-                decision = "❌ 移除" if c.is_cross_duplicate else "✅ 保留"
-                reason = f"与 {c.duplicate_of} 重复" if c.is_cross_duplicate else ""
+                decision = "❌ Remove" if c.is_cross_duplicate else "✅ Keep"
+                reason = f"duplicate of {c.duplicate_of}" if c.is_cross_duplicate else ""
                 f.write(f"| {c.video_name} | {c.adjusted_score:.1f} | "
-                        f"{'是' if c.is_natural_end else '否'} | {decision} | {reason} |\n")
+                        f"{'yes' if c.is_natural_end else 'no'} | {decision} | {reason} |\n")
             f.write(f"\n")
 
-        f.write(f"## 最终拼接 ({len(kept)} 个片段)\n\n")
-        f.write(f"| 序号 | 视频 | 时长 | 调整分 | 自然结束 | 转录摘要 |\n")
-        f.write(f"|------|------|------|-------|----------|----------|\n")
+        f.write(f"## Final Concatenation ({len(kept)} clips)\n\n")
+        f.write(f"| # | Video | Duration | Adjusted | Natural End | Transcript Summary |\n")
+        f.write(f"|---|-------|----------|----------|-------------|--------------------|\n")
         for i, c in enumerate(kept, 1):
             summary = (c.transcript[:40] + "...") if c.transcript and len(c.transcript) > 40 else (c.transcript or "—")
             f.write(f"| {i} | {c.video_name} | {c.duration:.1f}s | "
-                    f"{c.adjusted_score:.1f} | {'是' if c.is_natural_end else '否'} | {summary} |\n")
-        f.write(f"\n**总时长**: {total_dur:.1f}s ({total_dur/60:.1f}min)\n")
-        f.write(f"\n**输出文件**: `{final_path}`\n")
+                    f"{c.adjusted_score:.1f} | {'yes' if c.is_natural_end else 'no'} | {summary} |\n")
+        f.write(f"\n**Total duration**: {total_dur:.1f}s ({total_dur/60:.1f}min)\n")
+        f.write(f"\n**Output file**: `{final_path}`\n")
 
-    print(f"   📄 报告: {report_path}")
+    print(f"   📄 Report: {report_path}")
     print(f"\n{'='*60}")
-    print(f"  批量处理完成! ({len(kept)}/{len(clips)} 个片段)")
+    print(f"  Batch processing complete! ({len(kept)}/{len(clips)} clips)")
     print(f"{'='*60}\n")
 
-# --- 主入口 ---
+# --- Main entry ---
 def main():
     if len(sys.argv) >= 2 and os.path.isdir(sys.argv[1]):
         input_dir = sys.argv[1]
@@ -619,9 +621,9 @@ def main():
 
     clip = process_single_video(video_path, output_dir, work_dir)
     if clip:
-        print(f"  场景A完成: {clip.clip_path}")
+        print(f"  Scenario A complete: {clip.clip_path}")
     else:
-        print("  ❌ 处理失败")
+        print("  ❌ Processing failed")
 
 if __name__ == "__main__":
     main()

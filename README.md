@@ -1,26 +1,27 @@
-# 视频自动剪辑系统 v4.7
+# Video Auto Editor v4.7
 
-基于规则和 AI 的自动化视频粗剪工具。自动从原始拍摄素材中识别最佳片段，完成剪辑与拼接。
+A rule-based and AI-powered automated video roughing tool. It automatically identifies the best segments from original footage and performs editing and splicing.
 
----
-
-## 功能概述
-
-- **场景A - 单视频粗剪**：从一个视频中自动选出最佳片段
-- **场景B - 批量粗剪拼接**：批量处理多个视频，自动跨视频去重后拼接为一个完整视频
-- **智能评分**：4维度评分（清晰开始/结束、中间流畅、节奏自然）+ 流畅度分析
-- **内容去重**：基于转录文本的相似度检测，视频内 + 跨视频双层去重
-- **自动报告**：每次处理自动生成 Markdown 格式的详细报告
 
 ---
 
-## 环境要求
+## Features
+
+- **Scenario A - Single Video**: Automatically selects the best segment from one video
+- **Scenario B - Batch Processing**: Processes multiple videos, performs cross-video deduplication, and concatenates into one final video
+- **Smart Scoring**: 4-dimension scoring (clear start/end, fluency, natural rhythm) + fluency analysis
+- **Content Deduplication**: Similarity detection based on transcription text, both within-video and cross-video
+- **Auto Reports**: Generates detailed Markdown reports for each processing run
+
+---
+
+## Requirements
 
 - **Python** 3.8+
-- **FFmpeg**（含 ffprobe）
+- **FFmpeg** (including ffprobe)
 - **openai-whisper**
 
-### 安装依赖
+### Installation
 
 ```bash
 # macOS
@@ -34,226 +35,227 @@ pip install openai-whisper
 
 ---
 
-## 快速开始
+## Quick Start
 
-### 场景A：单视频粗剪
+### Scenario A: Single Video
 
-传入一个**视频文件路径**：
+Pass a **video file path**:
 
 ```bash
-python3 video_editor_auto_v4.6.py ./视频.MTS ./output
+python3 video_editor_auto_v4.6.py ./video.MTS ./output
 ```
 
-输出：
+Output:
 
 ```
 output/
-├── 视频_粗剪.mp4    # 剪辑后的最佳片段
-└── 视频_报告.md     # 处理报告
+├── video_粗剪.mp4    # Best segment (clipped)
+└── video_报告.md     # Processing report
 ```
 
-### 场景B：批量粗剪 + 去重 + 拼接
+### Scenario B: Batch + Deduplication + Concatenation
 
-传入一个**文件夹路径**（自动识别为批量模式）：
+Pass a **folder path** (automatically detected as batch mode):
 
 ```bash
 python3 video_editor_auto_v4.6.py ./Video ./output
 ```
 
-输出（只有两个文件，中间产物自动清理）：
+Output (only two files, intermediate files are cleaned up):
 
 ```
 output/
-├── 最终拼接_20260311_1905.mp4  # 去重后的拼接视频
-└── 批量处理报告.md              # 批量报告（含各片段详情 + 去重决策）
+├── 最终拼接_20260311_1905.mp4  # Deduplicated concatenated video
+└── 批量处理报告.md              # Batch report (segment details + dedup decisions)
 ```
 
-### 命令格式
+### Command Format
 
 ```
-python3 video_editor_auto_v4.6.py <输入> [输出目录] [工作目录]
+python3 video_editor_auto_v4.6.py <input> [output_dir] [work_dir]
 ```
 
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `<输入>` | 视频文件路径（场景A）或文件夹路径（场景B） | 必填 |
-| `[输出目录]` | 粗剪视频和报告的输出位置 | `./output` |
-| `[工作目录]` | 临时音频文件等中间产物 | `./video_work` |
+| Parameter | Description | Default |
+|------------|-------------|---------|
+| `<input>` | Video file path (Scenario A) or folder path (Scenario B) | Required |
+| `[output_dir]` | Output directory for clips and reports | `./output` |
+| `[work_dir]` | Temporary directory for intermediate files | `./video_work` |
 
-支持的视频格式：`.MTS`、`.mp4`、`.mov`
+Supported formats: `.MTS`, `.mp4`, `.mov`
 
 ---
 
-## 处理流程
+## Processing Pipeline
 
-### 场景A（单视频）
-
-```
-输入视频 → 静音检测 → 段落识别 → 4维评分 → 筛选候选
-→ Whisper转录 → 流畅度分析 → 视频内去重 → 分层筛选 → 剪辑输出
-```
-
-### 场景B（批量）
+### Scenario A (Single Video)
 
 ```
-输入目录 → 逐个执行场景A(不生成单独报告)
-→ 跨视频去重 → 按文件名顺序拼接
-→ 清理中间文件 → 生成唯一一份批量报告
+Input video → Silence detection → Segment identification → 4-dimension scoring
+→ Candidate filtering → Whisper transcription → Fluency analysis
+→ Within-video dedup → Layered selection → Clip output
+```
+
+### Scenario B (Batch)
+
+```
+Input directory → Process each video (Scenario A, no individual reports)
+→ Cross-video deduplication → Concatenate by filename order
+→ Clean intermediate files → Generate single batch report
 ```
 
 ---
 
-## 配置参数
+## Configuration
 
-所有参数在脚本顶部的 `CONFIG` 字典中配置：
+All parameters are in the `CONFIG` dict at the top of the script:
 
 ```python
 CONFIG = {
-    # 静音检测
-    "silence_noise": -30,           # dB, 越小越严格
-    "silence_duration": 0.8,        # 秒, 静音最小时长
+    # Silence detection
+    "silence_noise": -30,           # dB, lower = stricter
+    "silence_duration": 0.8,        # seconds, minimum silence length
 
-    # 筛选标准
-    "min_score": 90,                # 基础分最低要求 (满分100)
-    "min_duration": 15,             # 段落最低时长 (秒)
+    # Filtering
+    "min_score": 90,                # Minimum base score (max 100)
+    "min_duration": 15,             # Minimum segment duration (seconds)
 
-    # 剪辑缓冲
-    "buffer_start": 1,              # 开始前缓冲 (秒)
-    "buffer_end": 3,                # 结束后缓冲 (秒)
+    # Clip buffer
+    "buffer_start": 1,              # Buffer before start (seconds)
+    "buffer_end": 3,                # Buffer after end (seconds)
 
-    # 编码参数
-    "crf": 18,                      # 视频质量 (18=视觉无损, 23=默认)
-    "preset": "fast",               # 编码速度
-    "audio_bitrate": "192k",        # 音频码率
+    # Encoding
+    "crf": 18,                      # Video quality (18=visually lossless, 23=default)
+    "preset": "fast",               # Encoding speed
+    "audio_bitrate": "192k",        # Audio bitrate
 
-    # 调整分权重
-    "penalty_repeat": 5,            # 每次重复扣分
-    "penalty_stutter": 3,           # 每次卡顿扣分
-    "penalty_interrupt": 10,        # 突然中断扣分
-    "bonus_natural_end": 5,         # 自然结束加分
-    "bonus_completeness_max": 3,    # 完整度加分上限
+    # Adjusted score weights
+    "penalty_repeat": 5,            # Per repeat penalty
+    "penalty_stutter": 3,           # Per stutter penalty
+    "penalty_interrupt": 10,        # Sudden interruption penalty
+    "bonus_natural_end": 5,         # Natural ending bonus
+    "bonus_completeness_max": 3,    # Completeness bonus cap
 
-    # 重复检测
-    "duplicate_threshold": 0.7,     # 内容相似度阈值 (0-1)
+    # Deduplication
+    "duplicate_threshold": 0.7,     # Content similarity threshold (0-1)
 }
 ```
 
-### 调参建议
+### Tuning Tips
 
-| 场景 | 参数 | 建议值 |
-|------|------|--------|
-| 环境噪音大 | `silence_noise` | 改为 `-35` |
-| 段落被切太碎 | `silence_duration` | 改为 `1.0` |
-| 想要更多候选 | `min_score` | 改为 `85` |
-| 想要更短片段 | `min_duration` | 改为 `10` |
-| 追求画质 | `crf` | 改为 `15`（文件更大） |
-
----
-
-## 评分体系
-
-### 基础分（4维 × 25分 = 100分）
-
-| 维度 | 满分 | 评判标准 |
-|------|------|---------|
-| 清晰的开始 | 25 | 段落前是否有足够的静音间隔 |
-| 清晰的结束 | 25 | 段落后是否有足够的静音间隔 |
-| 中间流畅 | 25 | 段落内部的中断次数越少越好 |
-| 节奏自然 | 25 | 停顿占比低 + 无过长单次停顿 + 非极短片段 |
-
-### 调整分（0-100）
-
-在基础分之上，根据转录文本分析进行加减分：
-
-| 项目 | 分值 | 说明 |
-|------|------|------|
-| 重复扣分 | -5/次 | "重说"类口误（按每30秒频率归一化） |
-| 卡顿扣分 | -3/次 | 嗯、啊、呃等语气词 |
-| 突然中断扣分 | -10 | 以"然后"、"但是"等连接词结尾 |
-| 自然结束加分 | +5 | 完整句子、问题、总结结尾 |
-| 完整度加分 | +0~3 | 自然结束 + 时长接近60秒 |
-
-### 分层筛选（选择最佳段落）
-
-不是单纯选分数最高的，而是按优先级逐层筛选：
-
-```
-第1层: 优先选自然结束的段落
-第2层: 按流畅度排序（容差1.5次/30秒）
-第3层: 按调整分排序
-第4层: 平局时 → 都没说完选最后一段；有说完的选最长的
-```
-
-### 去重规则
-
-视频内去重和跨视频去重使用相同的选择规则：
-
-```
-自然结束优先 → 调整分高优先 → 索引/文件名靠后优先
-```
+| Scenario | Parameter | Suggested Value |
+|----------|-----------|-----------------|
+| Noisy environment | `silence_noise` | `-35` |
+| Segments too fragmented | `silence_duration` | `1.0` |
+| Want more candidates | `min_score` | `85` |
+| Want shorter segments | `min_duration` | `10` |
+| Higher quality | `crf` | `15` (larger files) |
 
 ---
 
-## 常见问题
+## Scoring System
 
-### Q: 没有检测到静音段？
+### Base Score (4 dimensions × 25 points = 100)
 
-环境噪音可能导致误判。尝试将 `silence_noise` 从 `-30` 调低到 `-35`。
+| Dimension | Max | Criteria |
+|-----------|-----|----------|
+| Clear start | 25 | Sufficient silence before segment |
+| Clear end | 25 | Sufficient silence after segment |
+| Mid fluency | 25 | Fewer internal interruptions |
+| Natural rhythm | 25 | Low pause ratio + no overly long pauses + not too short |
 
-### Q: 段落被切得太碎？
+### Adjusted Score (0-100)
 
-静音时长阈值可能太短。将 `silence_duration` 从 `0.8` 调高到 `1.0` 或 `1.5`。
+Applied on top of base score based on transcription analysis:
 
-### Q: 选择了看起来评分不是最高的段落？
+| Item | Points | Description |
+|------|--------|-------------|
+| Repeat penalty | -5 each | "Re-said" type stutters (normalized per 30s) |
+| Stutter penalty | -3 each | Filler words (um, uh, etc.) |
+| Interruption penalty | -10 | Ends with connective words (then, but, etc.) |
+| Natural end bonus | +5 | Complete sentence, question, or summary ending |
+| Completeness bonus | +0~3 | Natural end + duration near 60s |
 
-系统使用**分层筛选**而非单纯比较分数。自然结束 > 流畅度 > 调整分 > 时长。一个95分但突然中断的段落可能不如一个90分但自然结束的段落。
+### Layered Selection (Choosing Best Segment)
 
-### Q: Whisper 转录不准确？
+Not simply the highest score; prioritized filtering:
 
-当前默认使用 `small` 模型以平衡速度和准确率。如果转录质量不佳：
-- 脚本中 `transcribe_segment` 函数里将 `--model small` 改为 `--model medium` 或 `--model large`
-- `medium` 模型中文准确率约 85%，推荐在资源允许时使用
+```
+Layer 1: Prefer naturally ending segments
+Layer 2: Sort by fluency (tolerance 1.5 per 30s)
+Layer 3: Sort by adjusted score
+Layer 4: Tie-break → incomplete: pick last; complete: pick longest
+```
 
-### Q: 跨视频去重时如何决定保留哪个？
+### Deduplication Rules
 
-选择规则：自然结束优先 → 调整分高优先 → 文件名靠后优先（通常是最后一次拍摄，状态最好）。
+Same selection rule for within-video and cross-video dedup:
 
-### Q: 如何查看详细处理报告？
-
-- 场景A：`output/<视频名>_报告.md`
-- 场景B：`output/批量处理报告.md`（含各片段详情、转录摘要、跨视频去重决策）
-  - 场景B不会生成单独的中间报告和粗剪文件，拼接完成后自动清理
+```
+Natural end > Adjusted score > Index/filename order (later preferred)
+```
 
 ---
 
-## 项目结构
+## FAQ
+
+### Q: No silence segments detected?
+
+Background noise may cause misdetection. Try lowering `silence_noise` from `-30` to `-35`.
+
+### Q: Segments cut too finely?
+
+Silence duration threshold may be too short. Increase `silence_duration` from `0.8` to `1.0` or `1.5`.
+
+### Q: Why wasn't the highest-scoring segment chosen?
+
+The system uses **layered selection**, not raw score comparison. Natural end > Fluency > Adjusted score > Duration. A 95-point segment that ends abruptly may rank lower than a 90-point segment with a natural ending.
+
+### Q: Whisper transcription inaccurate?
+
+Default uses `small` model for speed/accuracy balance. To improve:
+- In `transcribe_segment`, change `--model small` to `--model medium` or `--model large`
+- `medium` model has ~85% accuracy for Chinese; recommended if resources allow
+
+### Q: How does cross-video dedup decide which to keep?
+
+Selection rule: Natural end > Adjusted score > Later filename (usually last take, best state).
+
+### Q: Where are the detailed reports?
+
+- Scenario A: `output/<video_name>_报告.md`
+- Scenario B: `output/批量处理报告.md` (includes segment details, transcription summaries, dedup decisions)
+  - Scenario B does not keep intermediate reports or clips; they are cleaned after concatenation
+
+---
+
+## Project Structure
 
 ```
 video_editor_v4.6_release/
-├── video_editor_auto_v4.6.py   # 主程序
-├── README.md                   # 本文档（使用说明）
-├── 代码文档.md                  # 技术文档（模块与算法详解）
-├── requirements.txt            # Python 依赖
-├── LICENSE                     # GPL v3 许可证
-└── .gitignore                  # Git 忽略规则
+├── video_editor_auto_v4.6.py   # Main script
+├── README.md                   # This doc (Chinese)
+├── README_EN.md                # This doc (English)
+├── 代码文档.md                  # Technical doc (Chinese)
+├── CODE_DOCUMENTATION.md       # Technical doc (English)
+├── requirements.txt            # Python dependencies
+├── LICENSE                     # GPL v3 license
+└── .gitignore                  # Git ignore rules
 ```
 
 ---
 
-## 技术文档
+## Technical Documentation
 
-如需了解各模块的详细实现、数据结构定义、算法说明和扩展指南，请参阅 `代码文档.md`。
-
----
-
-## 许可证 (License)
-
-本项目采用 **GPL v3** 许可证。若你将本软件或其衍生作品用于商业用途，你必须将你的产品同样以开源方式发布（遵守 GPL v3 的传染性条款）。
-
-This project is licensed under **GPL v3**. If you use this software or its derivatives for commercial purposes, you must release your product as open source under the same license.
-
-详见 [LICENSE](LICENSE) 文件。
+For module implementation details, data structures, algorithms, and extension guides, see `CODE_DOCUMENTATION.md`.
 
 ---
 
-**版本**: v4.7 | **最后更新**: 2026-03-11
+## License
+
+This project is licensed under **GPL v3**. If you use this software or its derivatives for commercial purposes, you must release your product as open source under the same license (GPL v3 copyleft requirement).
+
+See the [LICENSE](LICENSE) file for details.
+
+---
+
+**Version**: v4.7 | **Last Updated**: 2026-03-11
