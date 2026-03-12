@@ -246,10 +246,8 @@ Selection rule: Natural end > Adjusted score > Later filename (usually last take
 ```
 video_editor_v4.6_release/
 ├── video_editor_auto_v4.6.py   # Main script
-├── README.md                   # This doc (Chinese)
-├── README_EN.md                # This doc (English)
-├── 代码文档.md                  # Technical doc (Chinese)
-├── CODE_DOCUMENTATION.md       # Technical doc (English)
+├── README.md                   # This doc
+├── CODE_DOCUMENTATION.md       # Technical doc (architecture, modules, API)
 ├── requirements.txt            # Python dependencies
 ├── LICENSE                     # GPL v3 license
 └── .gitignore                  # Git ignore rules
