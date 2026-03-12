@@ -2,6 +2,7 @@
 
 A rule-based and AI-powered automated video roughing tool. It automatically identifies the best segments from original footage and performs editing and splicing.
 
+> **Best for**: **Single-person / talking-to-camera (A'Roll) content** — vlogs, tutorials, podcasts, knowledge-sharing monologues. Not suitable for multi-person dialogues, interviews, or music/B-roll heavy content.
 
 ---
 
@@ -12,6 +13,18 @@ A rule-based and AI-powered automated video roughing tool. It automatically iden
 - **Smart Scoring**: 4-dimension scoring (clear start/end, fluency, natural rhythm) + fluency analysis
 - **Content Deduplication**: Similarity detection based on transcription text, both within-video and cross-video
 - **Auto Reports**: Generates detailed Markdown reports for each processing run
+
+---
+
+## Best For / Not Suitable
+
+| ✅ Best For | ❌ Not Suitable |
+|-------------|-----------------|
+| Single-person talking to camera (A'Roll) | Multi-person dialogues, interviews |
+| Vlogs, tutorials, podcasts, monologues | Music-heavy, B-roll heavy content |
+| Multiple takes of same content (batch dedup) | Content requiring multiple segments kept |
+| Chinese speech (fluency patterns tuned) | Non-Chinese (patterns not adapted) |
+| Raw long footage (rough cut) | Already tightly edited content |
 
 ---
 

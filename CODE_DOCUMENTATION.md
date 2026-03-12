@@ -3,7 +3,7 @@
 **Version**: v4.7
 **Last Updated**: 2026-03-11
 
-> This document is for developers. It describes the system architecture, module implementations, data structures, and extension guidelines. 
+> This document is for developers. It describes the system architecture, module implementations, data structures, and extension guidelines. The system is designed for **single-person / talking-to-camera (A'Roll) content**; segmentation and fluency analysis assume monologue-style speech. 
 
 ---
 
